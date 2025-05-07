@@ -1,0 +1,137 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: warp-secret
+stringData:
+  WARP_HOST: s3.fr-par.scw.cloud:443
+  WARP_REGION: fr-par
+  WARP_ACCESS_KEY: SCWxxxxx
+  WARP_SECRET_KEY: yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+  WARP_TLS: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: warp-command
+data:
+  run.sh: |
+    #!/bin/ash
+    objsize="$1"
+    bucket="$2"
+    shift 2
+    set -x
+    /warp mixed \
+    --autoterm \
+    --obj.size=$objsize \
+    --bucket=$bucket \
+    --get-distrib 40 \
+    --put-distrib 30 \
+    --stat-distrib 20 \
+    --delete-distrib 10 \
+    $@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: warp-clients
+data:
+  clients: |
+    warp-client-0.warp-client
+    warp-client-1.warp-client
+    warp-client-2.warp-client
+    warp-client-3.warp-client
+    warp-client-4.warp-client
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: warp-client
+  labels:
+    app: warp-client
+spec:
+  ports:
+  - port: 7761
+    name: client
+  clusterIP: None
+  selector:
+    app: warp-client
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: warp-client
+spec:
+  selector:
+    matchLabels:
+      app: warp-client
+  serviceName: "warp-client"
+  replicas: 5
+  minReadySeconds: 2 
+  template:
+    metadata:
+      labels:
+        app: warp-client
+    spec:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: warp-client
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: warp-client
+        image: minio/warp:v1.1.2
+        command:
+        - /bin/sh
+        - -c
+        - /warp client 0.0.0.0:7761
+        ports:
+        - containerPort: 7761
+          name: warp-client
+  volumeClaimTemplates: []
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: warp-server
+  name: warp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: warp-server
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: warp-server
+    spec:
+      volumes:
+      - name: warp-clients
+        configMap:
+          name: warp-clients
+      - name: warp-command
+        configMap:
+          name: warp-command
+          defaultMode: 0777
+      containers:
+      - name: warp-server
+        image: minio/warp:v1.1.2
+        command:
+        - /bin/sh
+        - -c
+        - tail -f /dev/null
+        volumeMounts:
+        - name: warp-command
+          mountPath: /run.sh
+          subPath: run.sh
+        - name: warp-clients
+          mountPath: /clients
+          subPath: clients
+        envFrom:
+        - secretRef:
+            name: warp-secret
